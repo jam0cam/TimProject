@@ -3,10 +3,12 @@ package com.jiacorp.timproject;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
+import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.Handler;
 import android.speech.RecognizerIntent;
 import android.speech.tts.TextToSpeech;
+import android.support.design.widget.Snackbar;
 import android.support.v7.app.AppCompatActivity;
 import android.support.v7.widget.Toolbar;
 import android.util.Log;
@@ -16,6 +18,7 @@ import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.ListView;
 import android.widget.TextView;
@@ -23,6 +26,8 @@ import android.widget.Toast;
 
 import com.bumptech.glide.Glide;
 
+import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -30,15 +35,29 @@ import java.util.Locale;
 
 import butterknife.ButterKnife;
 import butterknife.InjectView;
+import edu.cmu.pocketsphinx.Assets;
+import edu.cmu.pocketsphinx.Hypothesis;
+import edu.cmu.pocketsphinx.RecognitionListener;
+import edu.cmu.pocketsphinx.SpeechRecognizer;
 
-public class MainActivity extends AppCompatActivity implements TextToSpeech.OnInitListener, TextToSpeech.OnUtteranceCompletedListener {
+
+import static edu.cmu.pocketsphinx.SpeechRecognizerSetup.defaultSetup;
+
+public class MainActivity extends AppCompatActivity implements TextToSpeech.OnInitListener, TextToSpeech.OnUtteranceCompletedListener, RecognitionListener {
 
     private static final String TAG = MainActivity.class.getName();
-
+    private static final String KWS_SEARCH = "wakeup";
+    private static final String START = "start";
+    private static final String PLAY = "play";
+    private static final String STOP = "stop";
+    private static final String RESUME = "resume";
+    private static final String CONTINUE = "continue";
+    private static final String NEXT = "next";
 
     enum ReadMode {
         TITLE, SUMMARY, SUMMARY_PROMPT, NEXT_MESSAGE_STATEMENT, GOOD_BYE;
     }
+
 
     private static final int MY_DATA_CHECK_CODE = 1005;
     private static final int REQ_CODE_SPEECH_INPUT = 1004;
@@ -48,6 +67,9 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
 
     @InjectView(R.id.list_view)
     ListView mListView;
+
+    @InjectView(R.id.main_layout)
+    FrameLayout mMainLayout;
 
     private TextToSpeech mTts;
     List<Message> mItems;
@@ -59,6 +81,8 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
     private String mNextMessageStatement = "Next news.";
     private String mNoMoreNews = "There are no more news for now. Goodbye.";
     private Handler mHandler;
+    private SpeechRecognizer mRecognizer;
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -69,6 +93,75 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         Toolbar toolbar = (Toolbar) findViewById(R.id.toolbar);
         setSupportActionBar(toolbar);
 
+        setupMessages();
+
+        new AsyncTask<Void, Void, Exception>() {
+            @Override
+            protected Exception doInBackground(Void... params) {
+                try {
+                    Log.d(TAG, "doInBackground");
+                    Assets assets = new Assets(MainActivity.this);
+                    File assetDir = assets.syncAssets();
+                    setupRecognizer(assetDir);
+                } catch (IOException e) {
+                    Log.e(TAG, "IOException:" + e.getMessage());
+                    return e;
+                }
+                return null;
+            }
+
+            @Override
+            protected void onPostExecute(Exception result) {
+                Log.d(TAG, "onPostExecute");
+                if (result != null) {
+                    Log.e(TAG, "Failed to init mRecognizer " + result);
+                    Snackbar.make(mMainLayout, "Failed to init mRecognizer " + result, Snackbar.LENGTH_LONG).show();
+                } else {
+                    Log.d(TAG, "startListening");
+                    mRecognizer.startListening(KWS_SEARCH);
+                }
+            }
+        }.execute();
+
+        mHandler = new Handler(getMainLooper());
+
+        mAdapter = new ListAdapter(this, R.layout.list_item, mItems);
+        mListView.setAdapter(mAdapter);
+        setTitle("News");
+    }
+
+    private void setupRecognizer(File assetsDir) throws IOException {
+        // The mRecognizer can be configured to perform multiple searches
+        // of different kind and switch between them
+
+        Log.d(TAG, "setupRecognizer");
+        mRecognizer = defaultSetup()
+                .setAcousticModel(new File(assetsDir, "en-us-ptm"))
+                .setDictionary(new File(assetsDir, "cmudict-en-us.dict"))
+                        // Threshold to tune for keyphrase to balance between false alarms and misses
+                .setKeywordThreshold(1e-20f)
+                        // Use context-independent phonetic search, context-dependent is too slow for mobile
+                .setBoolean("-allphone_ci", true)
+                .getRecognizer();
+
+        Log.d(TAG, "addListener");
+        mRecognizer.addListener(this);
+
+        /** In your application you might not need to add all those searches.
+         * They are added here for demonstration. You can leave just one.
+         */
+
+        // Create keyword-activation search.
+        mRecognizer.addKeyphraseSearch(KWS_SEARCH, START);
+        mRecognizer.addKeyphraseSearch(KWS_SEARCH, PLAY);
+        mRecognizer.addKeyphraseSearch(KWS_SEARCH, RESUME);
+        mRecognizer.addKeyphraseSearch(KWS_SEARCH, CONTINUE);
+        mRecognizer.addKeyphraseSearch(KWS_SEARCH, STOP);
+        mRecognizer.addKeyphraseSearch(KWS_SEARCH, NEXT);
+    }
+
+
+    private void setupMessages() {
         mItems = new ArrayList<>();
         mItems.add(new Message("'Affluenza' teen's mother charged, $1M bond set",
                 "Tonya Couch, the mother of \"affluenza\" teen Ethan Couch is back in the United States and has been charged in Texas with hindering the apprehension of a felon.",
@@ -87,12 +180,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                 "With the College Football Playoff semifinal games on Thursday, ESPN is aiming to alter the way Americans celebrate the night.",
                 nytUrl
         ));
-
-        mHandler = new Handler(getMainLooper());
-
-        mAdapter = new ListAdapter(this, R.layout.list_item, mItems);
-        mListView.setAdapter(mAdapter);
-        setTitle("News");
     }
 
     @Override
@@ -226,7 +313,8 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
             mHandler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
-                    startSpeechInput();
+//                    startSpeechInput();
+                    readCurrentSummary();
                 }
             }, 500);
         } else if (mNextReadMode == ReadMode.SUMMARY_PROMPT) {
@@ -256,6 +344,15 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         }
     }
 
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        if (mRecognizer != null) {
+            mRecognizer.cancel();
+            mRecognizer.shutdown();
+        }
+    }
+
     public void startSpeechInput() {
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
@@ -268,6 +365,46 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                     getString(R.string.speech_not_supported),
                     Toast.LENGTH_SHORT).show();
         }
+    }
+
+    @Override
+    public void onBeginningOfSpeech() {
+
+    }
+
+    @Override
+    public void onEndOfSpeech() {
+
+    }
+
+    @Override
+    public void onPartialResult(Hypothesis hypothesis) {
+        if (hypothesis == null) {
+//            Log.d(TAG, "hypothesis = null");
+            return;
+        }
+
+        mRecognizer.stop();
+        String text = hypothesis.getHypstr();
+        Log.d(TAG, "hypothesis:" + text + " prob: " + hypothesis.getProb() + " score: " + hypothesis.getBestScore());
+        Snackbar.make(mMainLayout, text, Snackbar.LENGTH_LONG).show();
+
+        mRecognizer.startListening(KWS_SEARCH);
+    }
+
+    @Override
+    public void onResult(Hypothesis hypothesis) {
+        Log.d(TAG, "onResult" + hypothesis.getHypstr() + " prob: " + hypothesis.getProb() + " score: " + hypothesis.getBestScore());
+    }
+
+    @Override
+    public void onError(Exception e) {
+
+    }
+
+    @Override
+    public void onTimeout() {
+
     }
 
     static class ListAdapter extends ArrayAdapter<Message> {
